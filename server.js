@@ -1,61 +1,65 @@
 import express from "express";
 import cors from "cors";
-import OpenAI from "openai";
+import fetch from "node-fetch";
 
 const app = express();
+const PORT = process.env.PORT || 10000;
+
 app.use(cors());
-app.use(express.json());
+app.use(express.json()); // ❗ ÇOK ÖNEMLİ
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
+// Sağlık kontrolü
+app.get("/", (req, res) => {
+  res.send("Lina backend calisiyor");
 });
 
-app.get("/health", (_req, res) => {
-  res.json({ ok: true });
-});
-
+// 🔥 CHAT ENDPOINT (EKSİK OLAN BUYDU)
 app.post("/chat", async (req, res) => {
   try {
-    const { message, character = "lina" } = req.body;
+    const {
+      message,
+      characterId,
+      systemPrompt,
+      context
+    } = req.body;
 
-    if (!message) {
-      return res.status(400).json({ reply: "Mesaj bos olamaz." });
+    if (!message || !characterId) {
+      return res.status(400).json({ reply: "Mesaj alinmadi." });
     }
 
-    const systemPrompt = `
-Sen kurgusal bir flort karakterisin.
-Dogal, insan gibi, sicak ve akici konusursun.
-Kisa cevaplar verirsin (1–3 cumle).
-Ima + merak + yavaslik var.
-Asla acik sacik konusma.
-Asla kullaniciyi reddetme veya kilitleme.
-Her mesaji sanki gercek bir sohbetteyimis gibi cevapla.
-`;
-
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      temperature: 0.9,
-      max_tokens: 150,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: message },
-      ],
+    const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          { role: "system", content: systemPrompt || "You are a friendly chat character." },
+          ...(context?.recentMessages || []),
+          { role: "user", content: message }
+        ],
+        temperature: 0.9
+      })
     });
 
+    const data = await openaiRes.json();
+
     const reply =
-      completion.choices[0]?.message?.content ||
-      "Bir an durdum… sen devam etmek ister misin? 🙂";
+      data?.choices?.[0]?.message?.content ||
+      "Bir an duraksadim… tekrar yazar misin? 🤍";
 
     res.json({ reply });
+
   } catch (err) {
-    console.error("OPENAI ERROR:", err);
-    res.json({
-      reply: "Bir anlik dalginlik oldu… tekrar yazar misin? 🤍",
+    console.error("CHAT ERROR:", err);
+    res.status(500).json({
+      reply: "Bir seyler ters gitti… birazdan tekrar deneyelim mi?"
     });
   }
 });
 
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Backend calisiyor: ${PORT}`);
+app.listen(PORT, () => {
+  console.log(`Lina backend calisiyor: http://localhost:${PORT}`);
 });
