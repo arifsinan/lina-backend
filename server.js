@@ -13,123 +13,72 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// =======================
-// AYARLAR
-// =======================
-const DAILY_LIMIT = 30;
-const TZ = "Europe/Istanbul";
-const PORT = process.env.PORT || 3000;
-
-// key: clientKey:characterId
-const usage = new Map();
-const history = new Map();
-const hookState = new Map();
-
-// =======================
-// ZAMAN / LIMIT
-// =======================
-function dayKeyTR() {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: TZ,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date());
+/* =========================
+   SESSION / GAME STATE
+========================= */
+const sessions = new Map();
+/*
+key: clientKey:characterId
+value: {
+  phase: 0,
+  msgCount: 0,
+  history: [],
 }
+*/
 
-function keyOf(clientKey, characterId) {
-  return `${clientKey}:${characterId}`;
-}
-
-function remainingFor(key) {
-  const dk = dayKeyTR();
-  const st = usage.get(key);
-  if (!st || st.dayKey !== dk) {
-    usage.set(key, { dayKey: dk, used: 0 });
-    return DAILY_LIMIT;
+function getSession(key) {
+  if (!sessions.has(key)) {
+    sessions.set(key, {
+      phase: 0,
+      msgCount: 0,
+      history: [],
+    });
   }
-  return Math.max(0, DAILY_LIMIT - st.used);
+  return sessions.get(key);
 }
 
-function consume(key) {
-  const dk = dayKeyTR();
-  const st = usage.get(key) || { dayKey: dk, used: 0 };
-  st.used += 1;
-  usage.set(key, st);
-  return Math.max(0, DAILY_LIMIT - st.used);
+/* =========================
+   PHASE LOGIC (SADE)
+========================= */
+function updatePhase(s) {
+  if (s.msgCount >= 15) s.phase = 1;
 }
 
-// =======================
-// HOOK SISTEMI
-// =======================
-function nextDue(hour = 21, minute = 0) {
-  const now = new Date();
-  const d = new Date(now);
-  d.setHours(hour, minute, 0, 0);
-  if (d <= now) d.setDate(d.getDate() + 1);
-  return d.getTime();
+/* =========================
+   SYSTEM PROMPT
+========================= */
+function buildSystemPrompt(phase) {
+  const base = `
+You are Lina.
+Language: Turkish (ASCII only).
+Never say you are an AI.
+Short, natural chat replies (1-2 sentences).
+Always ask ONE soft question.
+No explicit sexual content.
+`;
+
+  const phase0 = `
+PHASE 0:
+Playful, testing, slightly distant.
+Do not open emotionally yet.
+`;
+
+  const phase1 = `
+PHASE 1:
+Warmer and curious.
+Small personal hints.
+Reward interest and attention.
+`;
+
+  return base + (phase === 1 ? phase1 : phase0);
 }
 
-function setHook(key) {
-  hookState.set(key, { dueAt: nextDue() });
-}
-function hookLocked(key) {
-  const s = hookState.get(key);
-  return s && Date.now() < s.dueAt;
-}
-function hookDue(key) {
-  const s = hookState.get(key);
-  return s && Date.now() >= s.dueAt;
-}
-function hookTime(key) {
-  return hookState.get(key)?.dueAt || 0;
-}
-function clearHook(key) {
-  hookState.delete(key);
-}
+/* =========================
+   ROUTES
+========================= */
 
-// =======================
-// ASCII TR
-// =======================
-function toAsciiTR(s) {
-  return String(s || "")
-    .replaceAll("ş", "s").replaceAll("Ş", "S")
-    .replaceAll("ğ", "g").replaceAll("Ğ", "G")
-    .replaceAll("ü", "u").replaceAll("Ü", "U")
-    .replaceAll("ö", "o").replaceAll("Ö", "O")
-    .replaceAll("ç", "c").replaceAll("Ç", "C")
-    .replaceAll("ı", "i").replaceAll("İ", "I");
-}
-
-// =======================
-// KARAKTERLER
-// =======================
-const CHARACTER_SYSTEM = {
-  naz: "Sen Nazsin. Oyunbaz, flortoz, kurnaz. Turkce ASCII konus.",
-  lina: "Sen Lina'sin. Net, havali, hafif meydan okur. Turkce ASCII konus.",
-  elif: "Sen Elif'sin. Duygusal, icten. Turkce ASCII konus.",
-  asya: "Sen Asya'sin. Dominant, kontrollu. Turkce ASCII konus.",
-  derya: "Sen Derya'sin. Gizemli, siirsel. Turkce ASCII konus.",
-  selin: "Sen Selin'sin. Sakin, guven veren. Turkce ASCII konus.",
-  mira: "Sen Mira'sin. Enerjik, maceraci. Turkce ASCII konus.",
-};
-
-// =======================
-// ENDPOINTS
-// =======================
-app.get("/health", (_, res) => res.json({ ok: true }));
-
-app.get("/limits", (req, res) => {
-  const clientKey = String(req.query.clientKey || "");
-  const characterId = String(req.query.characterId || "lina");
-  if (!clientKey) {
-    return res.json({ remaining: DAILY_LIMIT, lockUntilMs: 0 });
-  }
-  const key = keyOf(clientKey, characterId);
-  return res.json({
-    remaining: remainingFor(key),
-    lockUntilMs: hookLocked(key) ? hookTime(key) : 0,
-  });
+app.get("/health", (_, res) => {
+  res.json({ ok: true });
 });
 
 app.post("/chat", async (req, res) => {
@@ -137,62 +86,54 @@ app.post("/chat", async (req, res) => {
   const { message, characterId = "lina" } = req.body;
 
   if (!clientKey || !message) {
-    return res.json({ reply: "Bir seyler eksik 🤍" });
+    return res.status(400).json({ ok: false });
   }
 
-  const key = keyOf(clientKey, characterId);
+  const key = `${clientKey}:${characterId}`;
+  const s = getSession(key);
 
-  if (hookLocked(key)) {
-    return res.json({
-      silent: true,
-      remaining: remainingFor(key),
-      lockUntilMs: hookTime(key),
+  s.msgCount += 1;
+  updatePhase(s);
+
+  const systemPrompt = buildSystemPrompt(s.phase);
+
+  const messages = [
+    { role: "system", content: systemPrompt },
+    ...s.history.slice(-8),
+    { role: "user", content: message },
+  ];
+
+  try {
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      temperature: 0.85,
+      max_tokens: 140,
+      messages,
     });
-  }
 
-  if (hookDue(key)) {
-    clearHook(key);
-    consume(key);
-    return res.json({
-      reply: "Geldin… bekliyordum 🤍",
-      remaining: remainingFor(key),
-      lockUntilMs: 0,
-    });
-  }
+    const reply =
+      completion.choices[0]?.message?.content ||
+      "Buradayim. Devam etmek ister misin? 🙂";
 
-  if (remainingFor(key) <= 0) {
-    return res.json({
-      reply: "Bugunluk bu kadar… yarin devam edelim mi? 🙂",
-      remaining: 0,
-    });
-  }
-
-  const prev = history.get(key) || [];
-  const system = CHARACTER_SYSTEM[characterId] || CHARACTER_SYSTEM.lina;
-
-  const result = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    temperature: 0.85,
-    messages: [
-      { role: "system", content: system },
-      ...prev.slice(-10),
+    s.history.push(
       { role: "user", content: message },
-    ],
-  });
+      { role: "assistant", content: reply }
+    );
 
-  let reply = toAsciiTR(result.choices[0].message.content);
-
-  if (Math.random() < 0.12) {
-    setHook(key);
-    reply += "\n\nAksam 21:00 gibi gel… bir sey anlatacagim 🤍";
+    return res.json({
+      ok: true,
+      reply,
+      phase: s.phase,
+    });
+  } catch (e) {
+    return res.json({
+      ok: true,
+      reply: "Bir an duraksadim… simdi buradayim 🤍",
+    });
   }
-
-  history.set(key, [...prev, { role: "user", content: message }, { role: "assistant", content: reply }]);
-  const remaining = consume(key);
-
-  res.json({ reply, remaining, lockUntilMs: hookLocked(key) ? hookTime(key) : 0 });
 });
 
-app.listen(PORT, () =>
-  console.log(`Lina backend calisiyor : http://localhost:${PORT}`)
-);
+const PORT = 3000;
+app.listen(PORT, () => {
+  console.log("Lina backend calisiyor: http://localhost:" + PORT);
+});
