@@ -56,7 +56,7 @@ async function chatHandler(req, res) {
       model: "gpt-4o-mini",
       messages,
       temperature: 0.7,
-      max_tokens: 240,
+      max_tokens: 800,
     });
 
     const reply = result?.choices?.[0]?.message?.content?.trim() || "";
